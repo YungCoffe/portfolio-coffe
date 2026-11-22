@@ -68,12 +68,62 @@ $('projectDialog').addEventListener('close',()=>current=null);document.querySele
 $('top').addEventListener('click',()=>window.scrollTo({top:0,behavior:pref.reduce?'auto':'smooth'}));
 let timer;function toast(message){$('toast').textContent=message;$('toast').classList.remove('hidden');clearTimeout(timer);timer=setTimeout(()=>$('toast').classList.add('hidden'),3500)}$('share').addEventListener('click',async()=>{const url=location.protocol==='http:'||location.protocol==='https:'?location.href:'https://github.com/YungCoffe';try{if(navigator.share){await navigator.share({title:'Coffe · Portfólio',url});return}if(navigator.clipboard){await navigator.clipboard.writeText(url);toast(url.includes('github.com')?T[lang].copied:(lang==='pt'?'Link da página copiado.':lang==='es'?'Enlace de la página copiado.':'Page link copied.'));return}toast(T[lang].shareFailed)}catch(e){if(e.name!=='AbortError')toast(T[lang].shareFailed)}});
 let liveMembers=null,livePresence=null;
-function renderLive(){const tr=T[lang];$('members').textContent=tr.memberLabel+': '+(liveMembers===null?tr.unavailable:'≈ '+new Intl.NumberFormat(lang).format(liveMembers));const d=livePresence;const status=d&&['online','idle','dnd','offline'].includes(d.discord_status)?d.discord_status:'unknown';$('presenceDot').className='presence-dot '+status;$('presence').textContent=tr.statusLabel+': '+(status!=='unknown'?tr[status]:tr.unavailable);const game=d&&Array.isArray(d.activities)?d.activities.find(a=>a.type===0&&typeof a.name==='string'):null;$('gamePresence').textContent=tr.gameLabel+': '+(!d?tr.unavailable:game?game.name:tr.noneGame);const sp=d&&d.listening_to_spotify&&d.spotify&&typeof d.spotify.song==='string'?d.spotify:null;$('spotifyPresence').textContent=tr.spotifyLabel+': '+(!d?tr.unavailable:sp?sp.song+(sp.artist?' — '+sp.artist:''):tr.noneSpotify);const activities=d&&Array.isArray(d.activities)?d.activities:[];const custom=activities.find(a=>a&&a.type===4&&(typeof a.state==='string'&&a.state.trim()||typeof a.emoji?.name==='string'));const customText=custom?[typeof custom.emoji?.name==='string'?custom.emoji.name:'',typeof custom.state==='string'?custom.state:''].filter(Boolean).join(' '):'';$('customPresence').hidden=!customText;$('customPresence').textContent=customText?tr.customLabel+': '+customText:'';const others=activities.filter(a=>a&&[1,2,3,5].includes(a.type)&&typeof a.name==='string'&&a.name.trim()&&!(a.type===2&&a.name.toLowerCase()==='spotify'&&sp)).map(a=>[a.name,typeof a.details==='string'?a.details:'',typeof a.state==='string'?a.state:''].filter(Boolean).join(' — '));$('otherPresence').hidden=!others.length;$('otherPresence').textContent=others.length?tr.otherLabel+': '+others.join(' • '):''}
+function renderLive(){const tr=T[lang];$('members').textContent=tr.memberLabel+': '+(liveMembers===null?tr.unavailable:'≈ '+new Intl.NumberFormat(lang).format(liveMembers));const d=livePresence;const status=d&&['online','idle','dnd','offline'].includes(d.discord_status)?d.discord_status:'unknown';$('presenceDot').className='presence-dot '+status;$('presence').textContent=tr.statusLabel+': '+(status!=='unknown'?tr[status]:tr.unavailable);const game=d&&Array.isArray(d.activities)?d.activities.find(a=>a&&a.type===0&&typeof a.name==='string'):null;$('gamePresence').textContent=tr.gameLabel+': '+(!d?tr.unavailable:game?game.name:tr.noneGame);const sp=d&&d.listening_to_spotify&&d.spotify&&typeof d.spotify.song==='string'?d.spotify:null;$('spotifyPresence').textContent=tr.spotifyLabel+': '+(!d?tr.unavailable:sp?sp.song+(sp.artist?' — '+sp.artist:''):tr.noneSpotify);const activities=d&&Array.isArray(d.activities)?d.activities:[];const custom=activities.find(a=>a&&a.type===4&&(typeof a.state==='string'&&a.state.trim()||typeof a.emoji?.name==='string'));const customText=custom?[typeof custom.emoji?.name==='string'?custom.emoji.name:'',typeof custom.state==='string'?custom.state:''].filter(Boolean).join(' '):'';$('customPresence').hidden=!customText;$('customPresence').textContent=customText?tr.customLabel+': '+customText:'';const others=activities.filter(a=>a&&[1,2,3,5].includes(a.type)&&typeof a.name==='string'&&a.name.trim()&&!(a.type===2&&a.name.toLowerCase()==='spotify'&&sp)).map(a=>[a.name,typeof a.details==='string'?a.details:'',typeof a.state==='string'?a.state:''].filter(Boolean).join(' — '));$('otherPresence').hidden=!others.length;$('otherPresence').textContent=others.length?tr.otherLabel+': '+others.join(' • '):''}
 
-let liveFetchInFlight=false,liveSocketReady=false,presenceRevision=0,presenceFetchRevision=null;
-async function fetchPresence(){if(presenceFetchRevision!==null)return;const revision=presenceRevision;presenceFetchRevision=revision;try{const r=await fetch('https://api.lanyard.rest/v1/users/1466159674440024114',{signal:AbortSignal.timeout(9000),cache:'no-store'});if(!r.ok)throw Error('lanyard');const d=await r.json();if(d.success!==true||d.data?.discord_user?.id!=='1466159674440024114'||!['online','idle','dnd','offline'].includes(d.data.discord_status))throw Error('invalid');if(revision===presenceRevision)livePresence=d.data}catch(e){if(revision===presenceRevision&&!liveSocketReady)livePresence=null}finally{if(presenceFetchRevision===revision)presenceFetchRevision=null}renderLive()}
+let liveFetchInFlight=false,liveSocketReady=false,presenceRevision=0,presenceRequest=null;
+const presenceUserId='1466159674440024114';
+function validPresence(d){return d?.discord_user?.id===presenceUserId&&['online','idle','dnd','offline'].includes(d.discord_status)}
+function invalidatePresenceRequest(){
+  presenceRevision++;
+  const old=presenceRequest;presenceRequest=null;
+  if(old){clearTimeout(old.timeout);old.controller.abort()}
+}
+async function fetchPresence(){
+  if(liveSocketReady||presenceRequest)return;
+  const request={revision:presenceRevision,controller:new AbortController()};
+  presenceRequest=request;
+  request.timeout=setTimeout(()=>{if(presenceRequest===request){presenceRequest=null;if(!liveSocketReady&&request.revision===presenceRevision){livePresence=null;renderLive()}request.controller.abort()}},9000);
+  try{
+    const r=await fetch('https://api.lanyard.rest/v1/users/'+presenceUserId,{signal:request.controller.signal,cache:'no-store'});
+    if(!r.ok)throw Error('lanyard');
+    const d=await r.json();
+    if(d.success!==true||!validPresence(d.data))throw Error('invalid');
+    if(presenceRequest===request&&request.revision===presenceRevision&&!liveSocketReady){livePresence=d.data;renderLive()}
+  }catch(e){if(presenceRequest===request&&request.revision===presenceRevision&&!liveSocketReady){livePresence=null;renderLive()}}
+  finally{clearTimeout(request.timeout);if(presenceRequest===request)presenceRequest=null}
+}
 async function fetchLive(){fetchPresence();if(liveFetchInFlight)return;liveFetchInFlight=true;try{try{const r=await fetch('https://discord.com/api/v10/invites/vyxutils?with_counts=true',{signal:AbortSignal.timeout(9000),cache:'no-store'});if(!r.ok)throw Error('invite');const d=await r.json();if((d.guild_id||d.guild?.id)!=='1558573822507090012'||!Number.isInteger(d.approximate_member_count)||d.approximate_member_count<0)throw Error('invalid');liveMembers=d.approximate_member_count}catch(e){liveMembers=null}renderLive()}finally{liveFetchInFlight=false}}
-function connectPresence(){if(!('WebSocket' in window))return;let ws,heartbeat;try{ws=new WebSocket('wss://api.lanyard.rest/socket')}catch(e){setTimeout(connectPresence,15000);return}ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}if(m.op===1&&Number.isFinite(m.d?.heartbeat_interval)&&m.d.heartbeat_interval>0){clearInterval(heartbeat);heartbeat=setInterval(()=>{if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({op:3}))},m.d.heartbeat_interval);ws.send(JSON.stringify({op:2,d:{subscribe_to_id:'1466159674440024114'}}))}else if(m.op===0&&['INIT_STATE','PRESENCE_UPDATE'].includes(m.t)){const d=m.d;if(d?.discord_user?.id==='1466159674440024114'&&['online','idle','dnd','offline'].includes(d.discord_status)){presenceRevision++;liveSocketReady=true;livePresence=d;renderLive()}}};ws.onerror=()=>ws.close();ws.onclose=()=>{clearInterval(heartbeat);liveSocketReady=false;fetchLive();setTimeout(connectPresence,15000)}}
+let currentPresenceSocket=null,presenceReconnectTimer=null;
+function schedulePresenceReconnect(){if(!presenceReconnectTimer)presenceReconnectTimer=setTimeout(()=>{presenceReconnectTimer=null;connectPresence()},15000)}
+function connectPresence(){
+  if(!('WebSocket' in window)||currentPresenceSocket)return;
+  let ws,heartbeat,handshakeTimer,closed=false;
+  try{ws=new WebSocket('wss://api.lanyard.rest/socket')}catch(e){fetchPresence();schedulePresenceReconnect();return}
+  currentPresenceSocket=ws;
+  function disconnected(){
+    if(closed)return;closed=true;
+    clearInterval(heartbeat);clearTimeout(handshakeTimer);
+    if(currentPresenceSocket!==ws)return;
+    currentPresenceSocket=null;liveSocketReady=false;
+    invalidatePresenceRequest();fetchPresence();schedulePresenceReconnect();
+  }
+  // Only the initial handshake has a deadline: an established socket can be silent normally.
+  handshakeTimer=setTimeout(()=>{disconnected();try{ws.close()}catch(e){}},15000);
+  ws.onmessage=e=>{
+    if(closed||currentPresenceSocket!==ws)return;
+    let m;try{m=JSON.parse(e.data)}catch{return}
+    if(m?.op===1&&Number.isFinite(m.d?.heartbeat_interval)&&m.d.heartbeat_interval>0){
+      clearInterval(heartbeat);
+      heartbeat=setInterval(()=>{if(ws.readyState===WebSocket.OPEN){try{ws.send(JSON.stringify({op:3}))}catch(e){disconnected();try{ws.close()}catch(_){}}}},m.d.heartbeat_interval);
+      try{ws.send(JSON.stringify({op:2,d:{subscribe_to_id:presenceUserId}}))}catch(e){disconnected();try{ws.close()}catch(_){}}
+    }else if(m?.op===0&&(m.t==='INIT_STATE'||(m.t==='PRESENCE_UPDATE'&&liveSocketReady))&&validPresence(m.d)){
+      if(m.t==='INIT_STATE')clearTimeout(handshakeTimer);
+      invalidatePresenceRequest();liveSocketReady=true;livePresence=m.d;renderLive();
+    }
+  };
+  ws.onerror=()=>{disconnected();try{ws.close()}catch(e){}};
+  ws.onclose=disconnected;
+}
 applyTheme();applyMotion();t();fetchLive();connectPresence();setInterval(fetchLive,30000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)fetchLive()});
 </script><script>
 // Configuração pública: substituir apenas pela URL e chave anon pública do projeto.
